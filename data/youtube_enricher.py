@@ -425,8 +425,8 @@ def main():
         return
     
     # Configuration - Update these paths for your project
-    INPUT_CSV = "data/youtube_data.csv"      # Update with your CSV file name
-    OUTPUT_CSV = "data/enriched_youtube_data.csv" # Output file name
+    INPUT_CSV = "../data/youtube_data.csv"      # Update with your CSV file name
+    OUTPUT_CSV = "../data/enriched_youtube_data.csv" # Output file name
     VIDEO_ID_COLUMN = "ytvideoid"                 # Column name containing video IDs
     
     # Check if input file exists
