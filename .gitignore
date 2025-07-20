@@ -138,3 +138,4 @@ tensorboard_logs/
 
 # Documentation
 docs/_build/
+data/youtube_data.csv
