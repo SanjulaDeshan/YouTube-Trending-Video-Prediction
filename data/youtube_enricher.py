@@ -17,23 +17,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class YouTubeDataEnricher:
-    def __init__(self, api_key: str, checkpoint_dir: str = "checkpoints"):
+    def __init__(self, api_key: str, checkpoint_dir: str = "checkpoints", backup_dir: str = "backups"):
         """
         Initialize the YouTube Data Enricher with checkpoint support
         
         Args:
             api_key (str): YouTube Data API v3 key
             checkpoint_dir (str): Directory to store checkpoint files
+            backup_dir (str): Directory to store backup CSV files
         """
         self.api_key = api_key
         self.base_url = "https://www.googleapis.com/youtube/v3/videos"
-        self.captions_url = "https://www.googleapis.com/youtube/v3/captions"
         self.batch_size = 50
         self.rate_limit_delay = 0.1
         self.checkpoint_dir = checkpoint_dir
+        self.backup_dir = backup_dir
         
-        # Create checkpoint directory if it doesn't exist
+        # Create directories if they don't exist
         os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(backup_dir, exist_ok=True)
         
     def save_checkpoint(self, data: Dict, checkpoint_file: str):
         """Save checkpoint data to file"""
@@ -105,17 +107,48 @@ class YouTubeDataEnricher:
         return category_map.get(str(category_id), f'Unknown Category ({category_id})')
 
     def save_progress_csv(self, df: pd.DataFrame, output_file: str):
-        """Save current progress to CSV file"""
+        """Save current progress to CSV file with backup in separate folder"""
         try:
-            # Create backup filename with timestamp
+            # Create backup filename with timestamp in backup folder
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = output_file.replace('.csv', f'_backup_{timestamp}.csv')
+            base_name = os.path.basename(output_file).replace('.csv', '')
+            backup_file = os.path.join(self.backup_dir, f'{base_name}_backup_{timestamp}.csv')
             
+            # Save backup first
             df.to_csv(backup_file, index=False)
+            # Then save main file
             df.to_csv(output_file, index=False)
             logger.info(f"Progress saved to: {output_file} (backup: {backup_file})")
         except Exception as e:
             logger.error(f"Failed to save progress: {e}")
+    
+    def check_api_quota(self, response_data: Dict) -> bool:
+        """
+        Check if API response indicates quota/rate limit issues
+        
+        Returns:
+            bool: True if quota exceeded, False otherwise
+        """
+        if 'error' in response_data:
+            error = response_data['error']
+            error_code = error.get('code', 0)
+            error_reason = error.get('errors', [{}])[0].get('reason', '')
+            
+            if error_code == 403:
+                if 'quotaExceeded' in error_reason or 'dailyLimitExceeded' in error_reason:
+                    logger.error("YouTube API quota exceeded for the day")
+                    logger.info("Solutions:")
+                    logger.info("1. Wait until tomorrow (quota resets at midnight Pacific Time)")
+                    logger.info("2. Use a different API key if available")
+                    logger.info("3. Enable billing for higher quota limits")
+                    return True
+                elif 'rateLimitExceeded' in error_reason:
+                    logger.warning("Rate limit exceeded, will retry with delay")
+                    return False
+            elif error_code == 400:
+                logger.error(f"Bad request: {error.get('message', 'Unknown error')}")
+                return False
+        return False
     
     def get_video_details(self, video_ids: List[str]) -> Dict[str, Dict]:
         """
@@ -140,11 +173,11 @@ class YouTubeDataEnricher:
                 
                 data = response.json()
                 
-                # Handle API quota exceeded
-                if 'error' in data:
-                    if data['error'].get('code') == 403:
-                        logger.error("API quota exceeded. Please wait or use a different API key.")
-                        raise Exception("API quota exceeded")
+                # Check for quota issues
+                if self.check_api_quota(data):
+                    logger.error("API quota exceeded. Stopping process.")
+                    logger.info("Your progress has been saved. Run the script again tomorrow or with a new API key.")
+                    raise Exception("API quota exceeded")
                 
                 video_details = {}
                 for item in data.get('items', []):
@@ -182,51 +215,39 @@ class YouTubeDataEnricher:
         
         return {}
     
-    def get_caption_info(self, video_id: str) -> str:
+    def ensure_output_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Get caption availability for a single video
+        Ensure the DataFrame has all required columns in the correct order
         """
-        params = {
-            'part': 'snippet',
-            'videoId': video_id,
-            'key': self.api_key
-        }
+        required_columns = [
+            'videostatsid',
+            'ytvideoid', 
+            'views',
+            'comments',
+            'likes',
+            'dislikes',
+            'timestamp',
+            'video_title',
+            'video_description',
+            'video_category'
+        ]
         
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(self.captions_url, params=params, timeout=15)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('items'):
-                        return 'Available'
-                    else:
-                        return 'Not Available'
-                elif response.status_code == 403:
-                    # API quota or permissions issue
-                    return 'Unknown (API limit)'
-                else:
-                    return 'Unknown'
-                    
-            except requests.exceptions.Timeout:
-                logger.warning(f"Caption request timeout for {video_id} (attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                else:
-                    return 'Unknown (timeout)'
-            except Exception as e:
-                logger.warning(f"Failed to get captions for {video_id}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                else:
-                    return 'Unknown (error)'
+        # Add missing columns with empty values
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = ''
+                logger.info(f"Added missing column: {col}")
         
-        return 'Unknown'
+        # Reorder columns to match required order
+        # Keep any extra columns at the end
+        extra_columns = [col for col in df.columns if col not in required_columns]
+        final_columns = required_columns + extra_columns
+        
+        return df[final_columns]
     
     def process_csv(self, input_file: str, output_file: str, video_id_column: str = 'ytvideoid'):
         """
-        Process the CSV file with checkpoint support
+        Process the CSV file with checkpoint support (only title, description, category)
         """
         checkpoint_file = os.path.join(self.checkpoint_dir, f"{os.path.basename(input_file)}_checkpoint.pkl")
         
@@ -252,20 +273,16 @@ class YouTubeDataEnricher:
             df['video_title'] = ''
         if 'video_description' not in df.columns:
             df['video_description'] = ''
-        if 'video_caption' not in df.columns:
-            df['video_caption'] = ''
         if 'video_category' not in df.columns:
             df['video_category'] = ''
         
         # Load checkpoint if exists
         checkpoint_data = self.load_checkpoint(checkpoint_file)
         processed_videos = set()
-        processed_captions = set()
         
         if checkpoint_data:
             processed_videos = set(checkpoint_data.get('processed_videos', []))
-            processed_captions = set(checkpoint_data.get('processed_captions', []))
-            logger.info(f"Resuming: {len(processed_videos)} videos processed, {len(processed_captions)} captions processed")
+            logger.info(f"Resuming: {len(processed_videos)} videos already processed")
         
         # Get unique video IDs
         video_ids = df[video_id_column].dropna().astype(str).unique().tolist()
@@ -274,9 +291,9 @@ class YouTubeDataEnricher:
         logger.info(f"Total unique videos: {len(video_ids)}")
         logger.info(f"Remaining to process: {len(remaining_videos)}")
         
-        # Phase 1: Process video details in batches
+        # Process video details in batches
         if remaining_videos:
-            logger.info("=== PHASE 1: Fetching video titles and descriptions ===")
+            logger.info("=== Fetching video titles, descriptions, and categories ===")
             
             total_batches = (len(remaining_videos) + self.batch_size - 1) // self.batch_size
             
@@ -290,6 +307,13 @@ class YouTubeDataEnricher:
                     # Get video details for this batch
                     batch_details = self.get_video_details(batch_ids)
                     
+                    if not batch_details and batch_ids:
+                        logger.warning(f"No details retrieved for batch {batch_num}")
+                        # Still mark as processed to avoid infinite retries
+                        for video_id in batch_ids:
+                            processed_videos.add(video_id)
+                        continue
+                    
                     # Update dataframe
                     for video_id, details in batch_details.items():
                         mask = df[video_id_column].astype(str) == video_id
@@ -298,14 +322,20 @@ class YouTubeDataEnricher:
                         df.loc[mask, 'video_category'] = details['category']
                         processed_videos.add(video_id)
                     
+                    # Mark failed videos as processed too
+                    for video_id in batch_ids:
+                        if video_id not in batch_details:
+                            processed_videos.add(video_id)
+                    
                     # Save progress every 5 batches
                     if batch_num % 5 == 0:
-                        self.save_progress_csv(df, output_file)
+                        # Ensure proper column order before saving
+                        df_ordered = self.ensure_output_columns(df)
+                        self.save_progress_csv(df_ordered, output_file)
                         
                         # Save checkpoint
                         checkpoint_data = {
                             'processed_videos': list(processed_videos),
-                            'processed_captions': list(processed_captions),
                             'last_batch': batch_num,
                             'timestamp': datetime.now().isoformat()
                         }
@@ -316,11 +346,11 @@ class YouTubeDataEnricher:
                     
                 except KeyboardInterrupt:
                     logger.info("Process interrupted by user. Saving progress...")
-                    self.save_progress_csv(df, output_file)
+                    df_ordered = self.ensure_output_columns(df)
+                    self.save_progress_csv(df_ordered, output_file)
                     
                     checkpoint_data = {
                         'processed_videos': list(processed_videos),
-                        'processed_captions': list(processed_captions),
                         'last_batch': batch_num,
                         'timestamp': datetime.now().isoformat()
                     }
@@ -329,65 +359,24 @@ class YouTubeDataEnricher:
                     return
                 except Exception as e:
                     logger.error(f"Error in batch {batch_num}: {e}")
-                    # Continue with next batch
-                    continue
-        
-        # Phase 2: Process captions
-        remaining_for_captions = [vid for vid in video_ids if vid not in processed_captions]
-        
-        if remaining_for_captions:
-            logger.info("=== PHASE 2: Fetching caption information ===")
-            
-            total_captions = len(remaining_for_captions)
-            
-            for idx, video_id in enumerate(remaining_for_captions, 1):
-                try:
-                    logger.info(f"Processing captions {idx}/{total_captions}: {video_id}")
-                    
-                    caption_info = self.get_caption_info(video_id)
-                    
-                    # Update dataframe
-                    mask = df[video_id_column].astype(str) == video_id
-                    df.loc[mask, 'video_caption'] = caption_info
-                    processed_captions.add(video_id)
-                    
-                    # Save progress every 100 videos
-                    if idx % 100 == 0:
-                        self.save_progress_csv(df, output_file)
+                    if "quota exceeded" in str(e).lower():
+                        logger.info("Stopping due to quota limit. Progress has been saved.")
+                        df_ordered = self.ensure_output_columns(df)
+                        self.save_progress_csv(df_ordered, output_file)
                         
                         checkpoint_data = {
                             'processed_videos': list(processed_videos),
-                            'processed_captions': list(processed_captions),
-                            'caption_progress': idx,
+                            'last_batch': batch_num,
                             'timestamp': datetime.now().isoformat()
                         }
                         self.save_checkpoint(checkpoint_data, checkpoint_file)
-                        logger.info(f"Progress checkpoint saved ({idx}/{total_captions})")
-                    
-                    # Rate limiting for captions
-                    time.sleep(0.05)
-                    
-                except KeyboardInterrupt:
-                    logger.info("Process interrupted by user. Saving progress...")
-                    self.save_progress_csv(df, output_file)
-                    
-                    checkpoint_data = {
-                        'processed_videos': list(processed_videos),
-                        'processed_captions': list(processed_captions),
-                        'caption_progress': idx,
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    self.save_checkpoint(checkpoint_data, checkpoint_file)
-                    logger.info("Progress saved. You can resume by running the script again.")
-                    return
-                except Exception as e:
-                    logger.error(f"Error processing captions for {video_id}: {e}")
-                    # Mark as processed even if failed to avoid infinite retries
-                    processed_captions.add(video_id)
-                    df.loc[df[video_id_column].astype(str) == video_id, 'video_caption'] = 'Error'
+                        return
+                    # Continue with next batch for other errors
+                    continue
         
-        # Final save
-        self.save_progress_csv(df, output_file)
+        # Final save with proper column order
+        df_ordered = self.ensure_output_columns(df)
+        self.save_progress_csv(df_ordered, output_file)
         
         # Clean up checkpoint file on successful completion
         try:
@@ -400,16 +389,15 @@ class YouTubeDataEnricher:
         # Print summary
         filled_titles = (df['video_title'] != '').sum()
         filled_descriptions = (df['video_description'] != '').sum()
-        filled_captions = (df['video_caption'] != '').sum()
         filled_categories = (df['video_category'] != '').sum()
         
         logger.info("=== FINAL SUMMARY ===")
         logger.info(f"Total records: {len(df)}")
         logger.info(f"Videos with titles: {filled_titles}")
         logger.info(f"Videos with descriptions: {filled_descriptions}")
-        logger.info(f"Videos with caption info: {filled_captions}")
         logger.info(f"Videos with categories: {filled_categories}")
         logger.info(f"Output saved to: {output_file}")
+        logger.info(f"Backup files saved to: {self.backup_dir}")
 
 def main():
     """
