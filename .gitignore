@@ -141,3 +141,4 @@ docs/_build/
 data/youtube_data.csv
 data/enriched_youtube_data.csv
 data/entertainment_videos.csv
+data/entertainment_videos_with_subtitles.csv
