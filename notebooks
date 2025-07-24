@@ -1,0 +1,1126 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/SanjulaDeshan/YouTube-Trending-Video-Prediction/blob/main/notebooks\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "494011b5-2e9a-4a50-96d7-2fef906bc426",
+      "metadata": {
+        "id": "494011b5-2e9a-4a50-96d7-2fef906bc426",
+        "outputId": "f02311d4-390d-48e5-a9c2-785fae9fc1c4"
+      },
+      "outputs": [
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Combined Dataset Preview:\n",
+            "                                         video_title  \\\n",
+            "0                     BTS: Boy with Luv (Live) - SNL   \n",
+            "1          Star Wars: The Rise of Skywalker – Teaser   \n",
+            "2  Gordon Ramsay Enters An Indian Cooking Competi...   \n",
+            "3                         We Got Married...(Pt. 2/4)   \n",
+            "4             BTS Eat Churros on The Morning Mash Up   \n",
+            "\n",
+            "                                   video_description  label  \\\n",
+            "0  Musical guest BTS performs \"Boy with Luv\" on S...      1   \n",
+            "1  Every generation has a legend. Watch the brand...      1   \n",
+            "2  As Gordon's trip in Malaysia comes towards an ...      1   \n",
+            "3  The Day i Committed To My Bestfriend!!\\n\\n\\nFO...      1   \n",
+            "4  The Morning Mash Up crew gifted BTS with their...      1   \n",
+            "\n",
+            "                                                text  \n",
+            "0  BTS: Boy with Luv (Live) - SNL Musical guest B...  \n",
+            "1  Star Wars: The Rise of Skywalker – Teaser Ever...  \n",
+            "2  Gordon Ramsay Enters An Indian Cooking Competi...  \n",
+            "3  We Got Married...(Pt. 2/4) The Day i Committed...  \n",
+            "4  BTS Eat Churros on The Morning Mash Up The Mor...  \n",
+            "Total samples: 405511\n",
+            "Trending videos: 404464\n",
+            "Non-trending videos: 1047\n"
+          ]
+        }
+      ],
+      "source": [
+        "import pandas as pd\n",
+        "\n",
+        "# Step 1: Load the datasets\n",
+        "df_trending = pd.read_csv(\"../data/trending.csv\")\n",
+        "df_non_trending = pd.read_excel(\"../data/non_trending.xlsx\")\n",
+        "\n",
+        "# Step 2: Add label columns\n",
+        "df_trending['label'] = 1  # trending videos\n",
+        "df_non_trending['label'] = 0  # non-trending videos\n",
+        "\n",
+        "# Step 3: Keep only needed columns and standardize names\n",
+        "df_trending = df_trending[['video_title', 'video_description', 'label']]\n",
+        "df_non_trending = df_non_trending[['title', 'description', 'label']]\n",
+        "df_non_trending.rename(columns={'title': 'video_title', 'description': 'video_description'}, inplace=True)\n",
+        "\n",
+        "# Step 4: Combine the two DataFrames\n",
+        "df_combined = pd.concat([df_trending, df_non_trending], ignore_index=True)\n",
+        "\n",
+        "# Step 5: Drop rows with missing title/description\n",
+        "df_combined.dropna(subset=['video_title', 'video_description'], inplace=True)\n",
+        "\n",
+        "# Step 6: Create a combined 'text' column for model input\n",
+        "df_combined['text'] = df_combined['video_title'] + \" \" + df_combined['video_description']\n",
+        "\n",
+        "# Step 7: Preview the result\n",
+        "print(\"Combined Dataset Preview:\")\n",
+        "print(df_combined.head())\n",
+        "\n",
+        "# Optional: Check how many samples you have\n",
+        "print(\"Total samples:\", len(df_combined))\n",
+        "print(\"Trending videos:\", df_combined['label'].sum())\n",
+        "print(\"Non-trending videos:\", len(df_combined) - df_combined['label'].sum())"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "0fd24fba-957e-4a4b-89af-58dcf3f34fab",
+      "metadata": {
+        "id": "0fd24fba-957e-4a4b-89af-58dcf3f34fab"
+      },
+      "outputs": [],
+      "source": [
+        "# Save the combined DataFrame to a CSV file\n",
+        "df_combined.to_csv(\"../data/combined_entertainment_data.csv\", index=False)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "7b9332c5-aaae-4fb7-879c-8776a27f43af",
+      "metadata": {
+        "id": "7b9332c5-aaae-4fb7-879c-8776a27f43af",
+        "outputId": "be549aef-acd2-4c9a-e92a-756160d5b70d"
+      },
+      "outputs": [
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "✅ TF-IDF matrix shape: (405511, 5000)\n",
+            "✅ Labels shape: (405511,)\n"
+          ]
+        }
+      ],
+      "source": [
+        "import pandas as pd\n",
+        "import re\n",
+        "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+        "\n",
+        "# Step 1: Load the combined CSV (if not already loaded)\n",
+        "df_combined = pd.read_csv(\"../data/combined_entertainment_data.csv\")\n",
+        "\n",
+        "# Step 2: Define text cleaning function\n",
+        "def clean_text(text):\n",
+        "    text = str(text).lower()  # lowercase\n",
+        "    text = re.sub(r\"http\\S+|www\\S+|https\\S+\", '', text, flags=re.MULTILINE)  # remove URLs\n",
+        "    text = re.sub(r'@\\w+|#', '', text)  # remove @mentions and hashtags\n",
+        "    text = re.sub(r'[^a-zA-Z0-9\\s]', '', text)  # remove special characters\n",
+        "    text = re.sub(r'\\s+', ' ', text).strip()  # remove extra spaces\n",
+        "    return text\n",
+        "\n",
+        "# Step 3: Clean the text column\n",
+        "df_combined['clean_text'] = df_combined['text'].apply(clean_text)\n",
+        "\n",
+        "# Step 4: Prepare feature and label variables\n",
+        "X_text = df_combined['clean_text']\n",
+        "y = df_combined['label']\n",
+        "\n",
+        "# Step 5: Initialize TF-IDF Vectorizer\n",
+        "vectorizer = TfidfVectorizer(\n",
+        "    stop_words='english',       # remove common English stopwords\n",
+        "    max_features=5000,          # limit to top 5000 features\n",
+        "    ngram_range=(1, 2)          # use unigrams and bigrams\n",
+        ")\n",
+        "\n",
+        "# Step 6: Fit and transform text into vector format\n",
+        "X = vectorizer.fit_transform(X_text)\n",
+        "\n",
+        "# Step 7: Output shapes\n",
+        "print(\"✅ TF-IDF matrix shape:\", X.shape)\n",
+        "print(\"✅ Labels shape:\", y.shape)\n",
+        "# Save the cleaned dataset with clean_text column\n",
+        "df_combined.to_csv(\"../data/cleaned_entertainment_data.csv\", index=False)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "6f5553b2-c048-431a-aff5-23f285441008",
+      "metadata": {
+        "id": "6f5553b2-c048-431a-aff5-23f285441008",
+        "outputId": "79f6ac3a-8741-4387-ceca-00e960e3b317"
+      },
+      "outputs": [
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "label\n",
+            "1    404464\n",
+            "0      1047\n",
+            "Name: count, dtype: int64\n"
+          ]
+        }
+      ],
+      "source": [
+        "print(df_combined['label'].value_counts())"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "46e81f3b-07d2-4866-a924-e2adc65a87af",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "46e81f3b-07d2-4866-a924-e2adc65a87af",
+        "outputId": "f3672c7d-e88e-42e6-e1b5-f55768b80e68"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ New label balance:\n",
+            " label\n",
+            "0    1047\n",
+            "1    1047\n",
+            "Name: count, dtype: int64\n"
+          ]
+        }
+      ],
+      "source": [
+        "import pandas as pd\n",
+        "from sklearn.utils import resample\n",
+        "\n",
+        "# Step 1: Load the cleaned dataset\n",
+        "df = pd.read_csv(\"../content/cleaned_entertainment_data.csv\")  # Replace with your actual file name if different\n",
+        "\n",
+        "# Step 2: Separate majority and minority classes\n",
+        "df_majority = df[df['label'] == 1]\n",
+        "df_minority = df[df['label'] == 0]\n",
+        "\n",
+        "# Step 3: Downsample the majority class\n",
+        "df_majority_downsampled = resample(\n",
+        "    df_majority,\n",
+        "    replace=False,                   # no duplicates\n",
+        "    n_samples=len(df_minority),     # match minority count (1047)\n",
+        "    random_state=42                 # for reproducibility\n",
+        ")\n",
+        "\n",
+        "# Step 4: Combine minority and downsampled majority class\n",
+        "df_balanced = pd.concat([df_majority_downsampled, df_minority])\n",
+        "\n",
+        "# Step 5: Shuffle the rows\n",
+        "df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)\n",
+        "\n",
+        "# Step 6: Save to new CSV\n",
+        "df_balanced.to_csv(\"balanced_data.csv\", index=False)\n",
+        "\n",
+        "# Check balance\n",
+        "print(\"✅ New label balance:\\n\", df_balanced['label'].value_counts())"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "9bba5f3b-76d0-411e-93a7-e69cf26a8527",
+      "metadata": {
+        "id": "9bba5f3b-76d0-411e-93a7-e69cf26a8527",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "e0cf7ceb-4817-4eb1-ea5b-152cb3af6e9a"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ Cleaned and combined dataset saved as 'final_dataset_for_model.csv'\n"
+          ]
+        }
+      ],
+      "source": [
+        "import pandas as pd\n",
+        "import re\n",
+        "\n",
+        "# Load cleaned dataset (after balancing)\n",
+        "df = pd.read_csv(\"./balanced_data.csv\")  # Or the actual path\n",
+        "\n",
+        "# Cleaning function\n",
+        "def clean_text(text):\n",
+        "    text = str(text).lower()\n",
+        "    text = re.sub(r\"http\\S+|www\\S+|https\\S+\", \"\", text)  # remove URLs\n",
+        "    text = re.sub(r\"[^\\w\\s]\", \"\", text)  # remove punctuation\n",
+        "    text = re.sub(r\"\\d+\", \"\", text)  # remove numbers\n",
+        "    text = re.sub(r\"\\s+\", \" \", text).strip()  # remove extra whitespace\n",
+        "    return text\n",
+        "\n",
+        "# Apply separately\n",
+        "df[\"clean_title\"] = df[\"video_title\"].apply(clean_text)\n",
+        "df[\"clean_description\"] = df[\"video_description\"].apply(clean_text)\n",
+        "\n",
+        "# Combine for modeling\n",
+        "df[\"final_text\"] = df[\"clean_title\"] + \" \" + df[\"clean_description\"]\n",
+        "\n",
+        "# Save cleaned and combined file\n",
+        "df.to_csv(\"./final_dataset_for_model.csv\", index=False)\n",
+        "\n",
+        "print(\"✅ Cleaned and combined dataset saved as 'final_dataset_for_model.csv'\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+        "import pickle\n",
+        "\n",
+        "print(\"Step 4: Feature Extraction (Vectorization) \\n\")\n",
+        "\n",
+        "# Load the dataset\n",
+        "df = pd.read_csv(\"./final_dataset_for_model.csv\")\n",
+        "\n",
+        "# Confirm the column we’ll use\n",
+        "texts = df['final_text']\n",
+        "labels = df['label']\n",
+        "\n",
+        "# Create the TF-IDF Vectorizer\n",
+        "tfidf = TfidfVectorizer(\n",
+        "    max_features=5000,     # Limit to top 5000 features\n",
+        "    stop_words='english',  # Remove common English stop words\n",
+        "    ngram_range=(1, 2)     # Use unigrams and bigrams\n",
+        ")\n",
+        "\n",
+        "# Fit and transform the data\n",
+        "X = tfidf.fit_transform(texts)\n",
+        "\n",
+        "# Save vectorizer for future use (important for inference!)\n",
+        "with open('tfidf_vectorizer.pkl', 'wb') as f:\n",
+        "    pickle.dump(tfidf, f)\n",
+        "\n",
+        "from scipy.sparse import save_npz\n",
+        "\n",
+        "# Save features (sparse matrix format) and labels/\n",
+        "save_npz(\"X_features_tfidf.npz\", X)\n",
+        "labels.to_csv(\"y_labels.csv\", index=False)\n"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "fNuhMbeK_pyp",
+        "outputId": "07ec0497-cc47-49a6-889b-ce9d48538504"
+      },
+      "id": "fNuhMbeK_pyp",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Step 4: Feature Extraction (Vectorization) \n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "\n",
+        "# Load your cleaned CSV file\n",
+        "df = pd.read_csv(\"./final_dataset_for_model.csv\")  # replace with your actual cleaned file name\n",
+        "\n",
+        "# Combine clean_title and clean_description into one final column\n",
+        "df[\"final_text\"] = df[\"clean_title\"].fillna('') + \" \" + df[\"clean_description\"].fillna('')\n",
+        "\n",
+        "# Ensure correct column order (optional)\n",
+        "df = df[[\n",
+        "    \"video_title\",\n",
+        "    \"video_description\",\n",
+        "    \"label\",\n",
+        "    \"clean_title\",\n",
+        "    \"clean_description\",\n",
+        "    \"final_text\"\n",
+        "]]\n",
+        "\n",
+        "# Split into training and testing sets (80% train, 20% test)\n",
+        "train_df, test_df = train_test_split(\n",
+        "    df,\n",
+        "    test_size=0.2,\n",
+        "    random_state=42,\n",
+        "    stratify=df[\"label\"]\n",
+        ")\n",
+        "\n",
+        "# Save to new CSV files\n",
+        "train_df.to_csv(\"./train_data.csv\", index=False)\n",
+        "test_df.to_csv(\"./test_data.csv\", index=False)\n",
+        "\n",
+        "print(\"✅ Dataset split and saved successfully!\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "088NzDqFB95K",
+        "outputId": "fd8f285d-c23a-4b8e-84a0-58eeca5f2ba0"
+      },
+      "id": "088NzDqFB95K",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ Dataset split and saved successfully!\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+        "from sklearn.linear_model import LogisticRegression\n",
+        "from sklearn.metrics import classification_report, accuracy_score\n",
+        "import joblib\n",
+        "\n",
+        "# Step 1: Load data\n",
+        "df = pd.read_csv(\"./train_data.csv\")  # Make sure this is the latest cleaned and balanced file\n",
+        "\n",
+        "# Step 2: Define features and target\n",
+        "X = df['final_text']\n",
+        "y = df['label']\n",
+        "\n",
+        "# Step 3: Split into train and test sets (80% train, 20% test)\n",
+        "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n",
+        "\n",
+        "# Step 4: TF-IDF Vectorization\n",
+        "vectorizer = TfidfVectorizer(max_features=5000)\n",
+        "X_train_tfidf = vectorizer.fit_transform(X_train)\n",
+        "X_test_tfidf = vectorizer.transform(X_test)\n",
+        "\n",
+        "# Step 5: Train the classification model\n",
+        "model = LogisticRegression()\n",
+        "model.fit(X_train_tfidf, y_train)\n",
+        "\n",
+        "# Step 6: Evaluate the model\n",
+        "y_pred = model.predict(X_test_tfidf)\n",
+        "print(\"Accuracy:\", accuracy_score(y_test, y_pred))\n",
+        "print(\"Classification Report:\\n\", classification_report(y_test, y_pred))\n",
+        "\n",
+        "# Step 7: Save the model and vectorizer\n",
+        "joblib.dump(model, \"./text_classifier_model.pkl\")\n",
+        "joblib.dump(vectorizer, \"./tfidf_vectorizer.pkl\")\n",
+        "print(\"✅ successfully do the Step 6: Train the Classification Model\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "kLfKF4jASXgY",
+        "outputId": "5ed917ec-9d6e-4a55-c889-e4c095216bb2"
+      },
+      "id": "kLfKF4jASXgY",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Accuracy: 0.9343283582089552\n",
+            "Classification Report:\n",
+            "               precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.93      0.93      0.93       166\n",
+            "           1       0.93      0.93      0.93       169\n",
+            "\n",
+            "    accuracy                           0.93       335\n",
+            "   macro avg       0.93      0.93      0.93       335\n",
+            "weighted avg       0.93      0.93      0.93       335\n",
+            "\n",
+            "✅ successfully do the Step 6: Train the Classification Model\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+        "from sklearn.svm import SVC\n",
+        "from sklearn.linear_model import RidgeClassifier\n",
+        "from xgboost import XGBClassifier\n",
+        "import joblib\n",
+        "\n",
+        "# Step 1: Load the dataset\n",
+        "df = pd.read_csv(\"./train_data.csv\")\n",
+        "\n",
+        "# Step 2: Split features and labels\n",
+        "X = df['final_text']\n",
+        "y = df['label']\n",
+        "\n",
+        "# Step 3: Train-test split\n",
+        "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n",
+        "\n",
+        "# Step 4: TF-IDF Vectorization (fit only on train, transform both train & test)\n",
+        "vectorizer = TfidfVectorizer(max_features=5000)\n",
+        "X_train_tfidf = vectorizer.fit_transform(X_train)\n",
+        "X_test_tfidf = vectorizer.transform(X_test)\n",
+        "\n",
+        "# Save vectorizer (used by all models)\n",
+        "joblib.dump(vectorizer, \"./tfidf_vectorizer.pkl\")\n",
+        "\n",
+        "# --- Model 1: Ridge Classifier (Regression model for classification) ---\n",
+        "ridge_model = RidgeClassifier()\n",
+        "ridge_model.fit(X_train_tfidf, y_train)\n",
+        "joblib.dump(ridge_model, \"./ridge_classifier_model.pkl\")\n",
+        "\n",
+        "# --- Model 2: SVM Classifier ---\n",
+        "svm_model = SVC(kernel='linear', probability=True)\n",
+        "svm_model.fit(X_train_tfidf, y_train)\n",
+        "joblib.dump(svm_model, \"./svm_classifier_model.pkl\")\n",
+        "\n",
+        "# --- Model 3: XGBoost Classifier ---\n",
+        "xgb_model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')\n",
+        "xgb_model.fit(X_train_tfidf, y_train)\n",
+        "joblib.dump(xgb_model, \"./xgb_classifier_model.pkl\")\n",
+        "\n",
+        "print(\"✅ All models trained and saved successfully.\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "MnL-QUbQY1hd",
+        "outputId": "2ba6454f-78ac-431c-b1cd-229ee894823a"
+      },
+      "id": "MnL-QUbQY1hd",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "/usr/local/lib/python3.11/dist-packages/xgboost/core.py:158: UserWarning: [18:59:28] WARNING: /workspace/src/learner.cc:740: \n",
+            "Parameters: { \"use_label_encoder\" } are not used.\n",
+            "\n",
+            "  warnings.warn(smsg, UserWarning)\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ All models trained and saved successfully.\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import joblib\n",
+        "import pandas as pd\n",
+        "from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report\n",
+        "\n",
+        "# Load data\n",
+        "df = pd.read_csv(\"./train_data.csv\")\n",
+        "X = df['final_text']\n",
+        "y = df['label']\n",
+        "\n",
+        "# Split data\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n",
+        "\n",
+        "# Load TF-IDF vectorizer and transform text\n",
+        "vectorizer = joblib.load(\"tfidf_vectorizer.pkl\")\n",
+        "X_test_tfidf = vectorizer.transform(X_test)\n",
+        "\n",
+        "# Define models and names\n",
+        "model_files = {\n",
+        "    \"Logistic Regression\": \"text_classifier_model.pkl\",\n",
+        "    \"Ridge Classifier\": \"ridge_classifier_model.pkl\",\n",
+        "    \"SVM\": \"svm_classifier_model.pkl\",\n",
+        "    \"XGBoost\": \"xgb_classifier_model.pkl\"\n",
+        "}\n",
+        "\n",
+        "# Evaluate and compare\n",
+        "results = []\n",
+        "\n",
+        "for model_name, file_name in model_files.items():\n",
+        "    model = joblib.load(file_name)\n",
+        "    y_pred = model.predict(X_test_tfidf)\n",
+        "\n",
+        "    acc = accuracy_score(y_test, y_pred)\n",
+        "    prec = precision_score(y_test, y_pred)\n",
+        "    rec = recall_score(y_test, y_pred)\n",
+        "    f1 = f1_score(y_test, y_pred)\n",
+        "\n",
+        "    results.append({\n",
+        "        \"Model\": model_name,\n",
+        "        \"Accuracy\": acc,\n",
+        "        \"Precision\": prec,\n",
+        "        \"Recall\": rec,\n",
+        "        \"F1-Score\": f1\n",
+        "    })\n",
+        "\n",
+        "    print(f\"----- {model_name} -----\")\n",
+        "    print(classification_report(y_test, y_pred))\n",
+        "    print(\"Confusion Matrix:\")\n",
+        "    print(confusion_matrix(y_test, y_pred))\n",
+        "    print()\n",
+        "\n",
+        "# Display comparison table\n",
+        "results_df = pd.DataFrame(results)\n",
+        "print(\"🔍 Model Comparison:\\n\")\n",
+        "print(results_df.sort_values(by=\"F1-Score\", ascending=False).reset_index(drop=True))"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "Yoe03pRDgTju",
+        "outputId": "d0ad3316-7344-489f-c1b9-efbdb37b737b"
+      },
+      "id": "Yoe03pRDgTju",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "----- Logistic Regression -----\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.93      0.93      0.93       166\n",
+            "           1       0.93      0.93      0.93       169\n",
+            "\n",
+            "    accuracy                           0.93       335\n",
+            "   macro avg       0.93      0.93      0.93       335\n",
+            "weighted avg       0.93      0.93      0.93       335\n",
+            "\n",
+            "Confusion Matrix:\n",
+            "[[155  11]\n",
+            " [ 11 158]]\n",
+            "\n",
+            "----- Ridge Classifier -----\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.96      0.96      0.96       166\n",
+            "           1       0.96      0.96      0.96       169\n",
+            "\n",
+            "    accuracy                           0.96       335\n",
+            "   macro avg       0.96      0.96      0.96       335\n",
+            "weighted avg       0.96      0.96      0.96       335\n",
+            "\n",
+            "Confusion Matrix:\n",
+            "[[159   7]\n",
+            " [  7 162]]\n",
+            "\n",
+            "----- SVM -----\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.95      0.94      0.95       166\n",
+            "           1       0.94      0.95      0.95       169\n",
+            "\n",
+            "    accuracy                           0.95       335\n",
+            "   macro avg       0.95      0.95      0.95       335\n",
+            "weighted avg       0.95      0.95      0.95       335\n",
+            "\n",
+            "Confusion Matrix:\n",
+            "[[156  10]\n",
+            " [  8 161]]\n",
+            "\n",
+            "----- XGBoost -----\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.94      0.99      0.96       166\n",
+            "           1       0.99      0.93      0.96       169\n",
+            "\n",
+            "    accuracy                           0.96       335\n",
+            "   macro avg       0.97      0.96      0.96       335\n",
+            "weighted avg       0.97      0.96      0.96       335\n",
+            "\n",
+            "Confusion Matrix:\n",
+            "[[165   1]\n",
+            " [ 11 158]]\n",
+            "\n",
+            "🔍 Model Comparison:\n",
+            "\n",
+            "                 Model  Accuracy  Precision    Recall  F1-Score\n",
+            "0              XGBoost  0.964179   0.993711  0.934911  0.963415\n",
+            "1     Ridge Classifier  0.958209   0.958580  0.958580  0.958580\n",
+            "2                  SVM  0.946269   0.941520  0.952663  0.947059\n",
+            "3  Logistic Regression  0.934328   0.934911  0.934911  0.934911\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "import joblib\n",
+        "from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix\n",
+        "import nltk\n",
+        "nltk.download('stopwords')\n",
+        "\n",
+        "# Load test data\n",
+        "test_df = pd.read_csv(\"./test_data.csv\")\n",
+        "\n",
+        "# Combine title and description into final_text\n",
+        "def clean_text(text):\n",
+        "    import re\n",
+        "    from nltk.corpus import stopwords\n",
+        "    from nltk.stem import PorterStemmer\n",
+        "    stop_words = set(stopwords.words('english'))\n",
+        "    ps = PorterStemmer()\n",
+        "\n",
+        "    text = text.lower()\n",
+        "    text = re.sub(r'[^a-z\\s]', '', text)\n",
+        "    tokens = text.split()\n",
+        "    tokens = [ps.stem(word) for word in tokens if word not in stop_words]\n",
+        "    return ' '.join(tokens)\n",
+        "\n",
+        "test_df['final_text'] = (test_df['video_title'].astype(str) + ' ' + test_df['video_description'].astype(str)).apply(clean_text)\n",
+        "\n",
+        "# Load vectorizer\n",
+        "vectorizer = joblib.load(\"tfidf_vectorizer.pkl\")\n",
+        "X_test_final = vectorizer.transform(test_df['final_text'])\n",
+        "\n",
+        "# Labels\n",
+        "y_true = test_df['label']\n",
+        "\n",
+        "# Load all models\n",
+        "model_paths = {\n",
+        "    \"Logistic Regression\": \"text_classifier_model.pkl\",\n",
+        "    \"Ridge Classifier\": \"ridge_classifier_model.pkl\",\n",
+        "    \"SVM\": \"svm_classifier_model.pkl\",\n",
+        "    \"XGBoost\": \"xgb_classifier_model.pkl\"\n",
+        "}\n",
+        "\n",
+        "# Evaluate\n",
+        "print(\"\\n📊 Evaluation on External Test Data:\")\n",
+        "for name, path in model_paths.items():\n",
+        "    model = joblib.load(path)\n",
+        "    y_pred = model.predict(X_test_final)\n",
+        "\n",
+        "    print(f\"\\n📌 {name}\")\n",
+        "    print(f\"Accuracy: {accuracy_score(y_true, y_pred):.4f}\")\n",
+        "    print(f\"Precision: {precision_score(y_true, y_pred):.4f}\")\n",
+        "    print(f\"Recall: {recall_score(y_true, y_pred):.4f}\")\n",
+        "    print(f\"F1 Score: {f1_score(y_true, y_pred):.4f}\")\n",
+        "    print(\"Confusion Matrix:\")\n",
+        "    print(confusion_matrix(y_true, y_pred))\n",
+        "    print(classification_report(y_true, y_pred))"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "YoeFYM7HhXJY",
+        "outputId": "c99b178c-fd66-4c44-fbed-08a88ce9498a"
+      },
+      "id": "YoeFYM7HhXJY",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "[nltk_data] Downloading package stopwords to /root/nltk_data...\n",
+            "[nltk_data]   Unzipping corpora/stopwords.zip.\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "📊 Evaluation on External Test Data:\n",
+            "\n",
+            "📌 Logistic Regression\n",
+            "Accuracy: 0.6492\n",
+            "Precision: 0.9844\n",
+            "Recall: 0.3014\n",
+            "F1 Score: 0.4615\n",
+            "Confusion Matrix:\n",
+            "[[209   1]\n",
+            " [146  63]]\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.59      1.00      0.74       210\n",
+            "           1       0.98      0.30      0.46       209\n",
+            "\n",
+            "    accuracy                           0.65       419\n",
+            "   macro avg       0.79      0.65      0.60       419\n",
+            "weighted avg       0.79      0.65      0.60       419\n",
+            "\n",
+            "\n",
+            "📌 Ridge Classifier\n",
+            "Accuracy: 0.6778\n",
+            "Precision: 0.9512\n",
+            "Recall: 0.3732\n",
+            "F1 Score: 0.5361\n",
+            "Confusion Matrix:\n",
+            "[[206   4]\n",
+            " [131  78]]\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.61      0.98      0.75       210\n",
+            "           1       0.95      0.37      0.54       209\n",
+            "\n",
+            "    accuracy                           0.68       419\n",
+            "   macro avg       0.78      0.68      0.64       419\n",
+            "weighted avg       0.78      0.68      0.64       419\n",
+            "\n",
+            "\n",
+            "📌 SVM\n",
+            "Accuracy: 0.6969\n",
+            "Precision: 0.9556\n",
+            "Recall: 0.4115\n",
+            "F1 Score: 0.5753\n",
+            "Confusion Matrix:\n",
+            "[[206   4]\n",
+            " [123  86]]\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.63      0.98      0.76       210\n",
+            "           1       0.96      0.41      0.58       209\n",
+            "\n",
+            "    accuracy                           0.70       419\n",
+            "   macro avg       0.79      0.70      0.67       419\n",
+            "weighted avg       0.79      0.70      0.67       419\n",
+            "\n",
+            "\n",
+            "📌 XGBoost\n",
+            "Accuracy: 0.8353\n",
+            "Precision: 0.9861\n",
+            "Recall: 0.6794\n",
+            "F1 Score: 0.8045\n",
+            "Confusion Matrix:\n",
+            "[[208   2]\n",
+            " [ 67 142]]\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "           0       0.76      0.99      0.86       210\n",
+            "           1       0.99      0.68      0.80       209\n",
+            "\n",
+            "    accuracy                           0.84       419\n",
+            "   macro avg       0.87      0.83      0.83       419\n",
+            "weighted avg       0.87      0.84      0.83       419\n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from google.colab import drive\n",
+        "drive.mount('/content/drive')\n",
+        "\n",
+        "import os\n",
+        "\n",
+        "save_dir = \"/content/drive/My Drive/ML_Model_Files\"\n",
+        "os.makedirs(save_dir, exist_ok=True)\n",
+        "\n",
+        "import shutil\n",
+        "\n",
+        "# Move model and data files to Google Drive\n",
+        "shutil.copy(\"ridge_classifier_model.pkl\", save_dir)\n",
+        "shutil.copy(\"svm_classifier_model.pkl\", save_dir)\n",
+        "shutil.copy(\"xgb_classifier_model.pkl\", save_dir)\n",
+        "shutil.copy(\"text_classifier_model.pkl\", save_dir)\n",
+        "shutil.copy(\"tfidf_vectorizer.pkl\", save_dir)\n",
+        "shutil.copy(\"balanced_data.csv\", save_dir)\n",
+        "shutil.copy(\"test_data.csv\", save_dir)\n",
+        "shutil.copy(\"train_data.csv\", save_dir)\n",
+        "\n",
+        "os.listdir(save_dir)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "1j3fOuzsiMIN",
+        "outputId": "73bd72be-cda1-4ea3-b3cf-89b7c45454e0"
+      },
+      "id": "1j3fOuzsiMIN",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Mounted at /content/drive\n"
+          ]
+        },
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "['ridge_classifier_model.pkl',\n",
+              " 'svm_classifier_model.pkl',\n",
+              " 'xgb_classifier_model.pkl',\n",
+              " 'text_classifier_model.pkl',\n",
+              " 'tfidf_vectorizer.pkl',\n",
+              " 'balanced_data.csv',\n",
+              " 'test_data.csv',\n",
+              " 'train_data.csv']"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 15
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "import numpy as np\n",
+        "import joblib\n",
+        "from sklearn.metrics import (\n",
+        "    accuracy_score, f1_score, roc_auc_score,\n",
+        "    mean_absolute_error, mean_squared_error, r2_score,\n",
+        "    classification_report, confusion_matrix\n",
+        ")\n",
+        "\n",
+        "# === Load and preprocess test data ===\n",
+        "test_df = pd.read_csv(\"/content/drive/My Drive/ML_Model_Files/test_data.csv\")\n",
+        "\n",
+        "def clean_text(text):\n",
+        "    import re\n",
+        "    from nltk.corpus import stopwords\n",
+        "    from nltk.stem import PorterStemmer\n",
+        "    stop_words = set(stopwords.words('english'))\n",
+        "    ps = PorterStemmer()\n",
+        "\n",
+        "    text = text.lower()\n",
+        "    text = re.sub(r'[^a-z\\s]', '', text)\n",
+        "    tokens = text.split()\n",
+        "    tokens = [ps.stem(word) for word in tokens if word not in stop_words]\n",
+        "    return ' '.join(tokens)\n",
+        "\n",
+        "test_df['final_text'] = (test_df['video_title'].astype(str) + ' ' + test_df['video_description'].astype(str)).apply(clean_text)\n",
+        "\n",
+        "# Load vectorizer\n",
+        "vectorizer = joblib.load(\"/content/drive/My Drive/ML_Model_Files/tfidf_vectorizer.pkl\")\n",
+        "X_test_final = vectorizer.transform(test_df['final_text'])\n",
+        "y_true = test_df['label']\n",
+        "\n",
+        "# Load saved models\n",
+        "model_paths = {\n",
+        "    \"Logistic Regression\": \"/content/drive/My Drive/ML_Model_Files/text_classifier_model.pkl\",\n",
+        "    \"Ridge Classifier\": \"/content/drive/My Drive/ML_Model_Files/ridge_classifier_model.pkl\",\n",
+        "    \"SVM\": \"/content/drive/My Drive/ML_Model_Files/svm_classifier_model.pkl\",\n",
+        "    \"XGBoost\": \"/content/drive/My Drive/ML_Model_Files/xgb_classifier_model.pkl\"\n",
+        "}\n",
+        "\n",
+        "# === Evaluate all models ===\n",
+        "results = []\n",
+        "\n",
+        "for model_name, model_path in model_paths.items():\n",
+        "    model = joblib.load(model_path)\n",
+        "    y_pred = model.predict(X_test_final)\n",
+        "\n",
+        "    # Some models don't support probability; handle ROC accordingly\n",
+        "    try:\n",
+        "        if hasattr(model, \"predict_proba\"):\n",
+        "            y_proba = model.predict_proba(X_test_final)[:, 1]\n",
+        "        elif hasattr(model, \"decision_function\"):\n",
+        "            from sklearn.preprocessing import MinMaxScaler\n",
+        "            scores = model.decision_function(X_test_final)\n",
+        "            y_proba = MinMaxScaler().fit_transform(scores.reshape(-1, 1)).flatten()\n",
+        "        else:\n",
+        "            y_proba = y_pred  # fallback if no score or proba method\n",
+        "    except:\n",
+        "        y_proba = y_pred\n",
+        "\n",
+        "    results.append({\n",
+        "        \"Model\": model_name,\n",
+        "        \"Accuracy\": accuracy_score(y_true, y_pred),\n",
+        "        \"F1 Score\": f1_score(y_true, y_pred),\n",
+        "        \"ROC-AUC\": roc_auc_score(y_true, y_proba),\n",
+        "        \"MAE\": mean_absolute_error(y_true, y_pred),\n",
+        "        \"RMSE\": np.sqrt(mean_squared_error(y_true, y_pred)),\n",
+        "        \"R² Score\": r2_score(y_true, y_pred)\n",
+        "    })\n",
+        "\n",
+        "# Convert to DataFrame\n",
+        "results_df = pd.DataFrame(results).sort_values(by=\"Accuracy\", ascending=False)\n",
+        "\n",
+        "# Display results\n",
+        "print(\"\\n🔍 Model Evaluation Comparison:\\n\")\n",
+        "print(results_df.to_string(index=False))"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "d4nrLz0rqCMv",
+        "outputId": "1d459960-d188-47d8-e102-c22c93ca46e8"
+      },
+      "id": "d4nrLz0rqCMv",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "🔍 Model Evaluation Comparison:\n",
+            "\n",
+            "              Model  Accuracy  F1 Score  ROC-AUC      MAE     RMSE  R² Score\n",
+            "            XGBoost  0.835322  0.804533 0.928070 0.164678 0.405805  0.341285\n",
+            "                SVM  0.696897  0.575251 0.969310 0.303103 0.550548 -0.212417\n",
+            "   Ridge Classifier  0.677804  0.536082 0.969150 0.322196 0.567623 -0.288790\n",
+            "Logistic Regression  0.649165  0.461538 0.971656 0.350835 0.592314 -0.403349\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "import joblib\n",
+        "import re\n",
+        "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+        "from google.colab import drive # Import drive\n",
+        "\n",
+        "# Mount Google Drive to access saved files\n",
+        "drive.mount('/content/drive')\n",
+        "\n",
+        "\n",
+        "# Load TF-IDF Vectorizer used in training\n",
+        "tfidf_vectorizer = joblib.load(\"/content/drive/My Drive/ML_Model_Files/tfidf_vectorizer.pkl\")\n",
+        "\n",
+        "# Load all trained models\n",
+        "logistic_model = joblib.load(\"/content/drive/My Drive/ML_Model_Files/text_classifier_model.pkl\")\n",
+        "ridge_model = joblib.load(\"/content/drive/My Drive/ML_Model_Files/ridge_classifier_model.pkl\")\n",
+        "svm_model = joblib.load(\"/content/drive/My Drive/ML_Model_Files/svm_classifier_model.pkl\")\n",
+        "xgb_model = joblib.load(\"/content/drive/My Drive/ML_Model_Files/xgb_classifier_model.pkl\")\n",
+        "\n",
+        "# === Sample input ===\n",
+        "video_title = \"One Piece Ancient Mural Explained\"\n",
+        "video_description = \"In this video we will see detail comparison of one piece ancient mural. So enjoy the video.\"\n",
+        "\n",
+        "# === Clean text function (used during training) ===\n",
+        "def clean_text(text):\n",
+        "    text = text.lower()\n",
+        "    text = re.sub(r\"http\\S+|www\\S+|https\\S+\", '', text, flags=re.MULTILINE)  # remove links\n",
+        "    text = re.sub(r'[^a-zA-Z0-9\\s]', '', text)  # remove symbols\n",
+        "    text = re.sub(r'\\s+', ' ', text).strip()  # remove extra whitespace\n",
+        "    return text\n",
+        "\n",
+        "# Clean title and description\n",
+        "clean_title = clean_text(video_title)\n",
+        "clean_description = clean_text(video_description)\n",
+        "final_text = f\"{clean_title} {clean_description}\"\n",
+        "\n",
+        "# Vectorize\n",
+        "X_input = tfidf_vectorizer.transform([final_text])\n",
+        "\n",
+        "# Predict\n",
+        "logistic_pred_proba = logistic_model.predict_proba(X_input)[0] # Get probabilities\n",
+        "ridge_pred = ridge_model.predict(X_input)[0]\n",
+        "svm_pred_proba = svm_model.predict_proba(X_input)[0] # Get probabilities\n",
+        "xgb_pred_proba = xgb_model.predict_proba(X_input) # Get probabilities\n",
+        "\n",
+        "\n",
+        "# Print predictions\n",
+        "print(\"Predictions for sample input:\")\n",
+        "# Print probabilities for models that support it\n",
+        "print(f\"Logistic Regression Probability (Class 0, Class 1): {logistic_pred_proba}\")\n",
+        "print(f\"Ridge Classifier Prediction: {ridge_pred}\") # Ridge returns the predicted class directly\n",
+        "print(f\"SVM Probability (Class 0, Class 1): {svm_pred_proba}\")\n",
+        "print(f\"XGBoost Probability (Class 0, Class 1): {xgb_pred_proba[0][1]}\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "oOEUumOAriQ8",
+        "outputId": "cccbb113-aace-4a35-aed7-518c9c20c303"
+      },
+      "id": "oOEUumOAriQ8",
+      "execution_count": 5,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Drive already mounted at /content/drive; to attempt to forcibly remount, call drive.mount(\"/content/drive\", force_remount=True).\n",
+            "Predictions for sample input:\n",
+            "Logistic Regression Probability (Class 0, Class 1): [0.42844524 0.57155476]\n",
+            "Ridge Classifier Prediction: 0\n",
+            "SVM Probability (Class 0, Class 1): [0.67648475 0.32351525]\n",
+            "XGBoost Probability (Class 0, Class 1): 0.0008356526377610862\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "id": "DCVprb8St5VQ"
+      },
+      "id": "DCVprb8St5VQ",
+      "execution_count": null,
+      "outputs": []
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3 (ipykernel)",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.12.5"
+    },
+    "colab": {
+      "provenance": [],
+      "include_colab_link": true
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
